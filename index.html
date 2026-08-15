@@ -322,7 +322,10 @@
           <h1 class="page-title">Manage habits</h1>
           <p class="page-sub">Add, edit, delete, and set frequency &amp; category.</p>
         </div>
-        <button class="btn btn-primary" onclick="openHabitModal()">+ New habit</button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" onclick="openCategoryModal()">Manage categories</button>
+          <button class="btn btn-primary" onclick="openHabitModal()">+ New habit</button>
+        </div>
       </div>
       <div id="habits-list"></div>
     </section>
@@ -395,16 +398,11 @@
       <input type="text" id="habit-name-input" placeholder="e.g. Drink 8 glasses of water">
     </div>
     <div class="field">
-      <label>Category</label>
-      <select id="habit-category-input">
-        <option>Health</option>
-        <option>Productivity</option>
-        <option>Learning</option>
-        <option>Mindfulness</option>
-        <option>Finance</option>
-        <option>Relationships</option>
-        <option>Other</option>
-      </select>
+      <label style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Category</span>
+        <a href="javascript:void(0)" style="font-size:11px;font-weight:600;color:var(--amber);text-decoration:none;text-transform:none;letter-spacing:0;" onclick="openCategoryModal()">+ manage categories</a>
+      </label>
+      <select id="habit-category-input"></select>
     </div>
     <div class="field">
       <label>Frequency</label>
@@ -412,11 +410,16 @@
         <button type="button" class="btn btn-sm freq-opt" data-freq="daily">Daily</button>
         <button type="button" class="btn btn-sm freq-opt" data-freq="weekdays">Weekdays</button>
         <button type="button" class="btn btn-sm freq-opt" data-freq="custom">Custom days</button>
+        <button type="button" class="btn btn-sm freq-opt" data-freq="weekly_count">X times/week</button>
       </div>
     </div>
     <div class="field" id="custom-days-field" style="display:none;">
       <label>Which days</label>
       <div class="freq-row" id="custom-days-row"></div>
+    </div>
+    <div class="field" id="weekly-target-field" style="display:none;">
+      <label>How many times per week</label>
+      <input type="number" id="weekly-target-input" min="1" max="7" value="3">
     </div>
     <div class="field">
       <label>Color</label>
@@ -429,35 +432,69 @@
   </div>
 </div>
 
+<!-- Category Modal -->
+<div class="overlay" id="category-overlay">
+  <div class="modal">
+    <h3>Manage categories</h3>
+    <p style="font-size:12px;color:var(--muted);margin-top:-10px;margin-bottom:14px;">Click a color dot to cycle its color. Click the pencil to rename.</p>
+    <div id="category-list"></div>
+    <div class="field" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px;">
+      <label>New category name</label>
+      <input type="text" id="new-cat-name" placeholder="e.g. Fitness">
+    </div>
+    <div class="field">
+      <label>Color</label>
+      <div class="color-row" id="new-cat-color-row"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeCategoryModal()">Done</button>
+      <button class="btn btn-primary" onclick="addCategory()">+ Add category</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 /* ============ DATA LAYER ============ */
 const STORAGE_KEY = 'habitline_data_v1';
 const COLORS = ['#e2932f','#6b9080','#c9634f','#5b7fb5','#a874c9','#d4a53a','#4f9d8f'];
-const CATEGORY_COLORS = {
-  Health:'#6b9080', Productivity:'#e2932f', Learning:'#5b7fb5',
-  Mindfulness:'#a874c9', Finance:'#d4a53a', Relationships:'#c9634f', Other:'#8b8781'
-};
+const DEFAULT_CATEGORIES = [
+  {name:'Health', color:'#6b9080'}, {name:'Productivity', color:'#e2932f'},
+  {name:'Learning', color:'#5b7fb5'}, {name:'Mindfulness', color:'#a874c9'},
+  {name:'Finance', color:'#d4a53a'}, {name:'Relationships', color:'#c9634f'},
+  {name:'Other', color:'#8b8781'}
+];
 const DAY_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function loadData(){
+  let data = { habits: [], completions: {}, categories: [...DEFAULT_CATEGORIES] };
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw) data = JSON.parse(raw);
   }catch(e){ console.warn('Could not load saved data', e); }
-  return { habits: [], completions: {} }; // completions: { "YYYY-MM-DD": [habitId, habitId...] }
+  // migration: older saved data may not have a categories list yet
+  if(!data.categories || data.categories.length === 0){
+    data.categories = [...DEFAULT_CATEGORIES];
+  }
+  return data;
 }
 function saveData(){
   try{
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }catch(e){ console.warn('Could not save data', e); }
 }
+function getCategoryColor(name){
+  const cat = state.categories.find(c=>c.name===name);
+  return cat ? cat.color : '#8b8781';
+}
 
 let state = loadData();
 let currentFreq = 'daily';
 let currentCustomDays = [];
+let currentWeeklyTarget = 3;
 let currentColor = COLORS[0];
+let newCatColor = COLORS[0];
 let calViewDate = new Date();
 
 /* ============ HELPERS ============ */
@@ -469,6 +506,7 @@ function isScheduledToday(habit, date){
   if(habit.frequency === 'daily') return true;
   if(habit.frequency === 'weekdays') return day >= 1 && day <= 5;
   if(habit.frequency === 'custom') return habit.customDays.includes(day);
+  if(habit.frequency === 'weekly_count') return true; // can be checked off any day
   return true;
 }
 function isCompleted(habitId, dateStr){
@@ -481,7 +519,32 @@ function toggleCompletion(habitId, dateStr){
   if(idx > -1){ arr.splice(idx,1); } else { arr.push(habitId); }
   saveData();
 }
+
+/* --- Weekly ("X times a week") helpers --- */
+function getWeekStart(date){
+  const d = new Date(date);
+  d.setHours(0,0,0,0);
+  d.setDate(d.getDate() - d.getDay()); // back up to Sunday
+  return d;
+}
+function weekCompletionCount(habit, weekStart){
+  let count = 0;
+  for(let i=0;i<7;i++){
+    const d = new Date(weekStart);
+    d.setDate(d.getDate()+i);
+    if(todayStr(d) === todayStr() ){ if(isCompleted(habit.id, todayStr(d))) count++; continue; }
+    if(d > new Date()) continue; // future day this week, can't be completed yet
+    if(isCompleted(habit.id, todayStr(d))) count++;
+  }
+  return count;
+}
+function weeklyProgressLabel(habit){
+  const count = weekCompletionCount(habit, getWeekStart(new Date()));
+  return count + '/' + habit.weeklyTarget + ' this wk';
+}
+
 function calcStreak(habit){
+  if(habit.frequency === 'weekly_count') return calcStreakWeekly(habit);
   let streak = 0;
   let d = new Date();
   // walk backwards from today
@@ -501,7 +564,25 @@ function calcStreak(habit){
   }
   return streak;
 }
+function calcStreakWeekly(habit){
+  // number of consecutive weeks (counting this week if already on target) hitting the weekly target
+  let streak = 0;
+  let weekStart = getWeekStart(new Date());
+  for(let i=0;i<520;i++){ // up to ~10 years back
+    const count = weekCompletionCount(habit, weekStart);
+    if(count >= habit.weeklyTarget){
+      streak++;
+    } else if(i === 0){
+      // current week still in progress and not yet met — don't break, just don't count it
+    } else {
+      break;
+    }
+    weekStart.setDate(weekStart.getDate()-7);
+  }
+  return streak;
+}
 function calcLongestStreakEver(habit){
+  if(habit.frequency === 'weekly_count') return calcLongestStreakWeekly(habit);
   // scan all completion dates for this habit
   const dates = Object.keys(state.completions).filter(ds => state.completions[ds].includes(habit.id)).sort();
   if(dates.length === 0) return 0;
@@ -512,6 +593,20 @@ function calcLongestStreakEver(habit){
     const diffDays = Math.round((currD-prev)/86400000);
     if(diffDays === 1){ cur++; } else { cur = 1; }
     longest = Math.max(longest, cur);
+  }
+  return longest;
+}
+function calcLongestStreakWeekly(habit){
+  const dates = Object.keys(state.completions).filter(ds => state.completions[ds].includes(habit.id)).sort();
+  if(dates.length === 0) return 0;
+  let cursor = getWeekStart(new Date(dates[0]+'T00:00:00'));
+  const endWeek = getWeekStart(new Date());
+  let longest = 0, cur = 0;
+  while(cursor <= endWeek){
+    const count = weekCompletionCount(habit, cursor);
+    if(count >= habit.weeklyTarget){ cur++; longest = Math.max(longest, cur); }
+    else { cur = 0; }
+    cursor.setDate(cursor.getDate()+7);
   }
   return longest;
 }
@@ -569,31 +664,133 @@ document.querySelectorAll('.freq-opt').forEach(btn=>{
     document.querySelectorAll('.freq-opt').forEach(b=>b.classList.remove('btn-primary'));
     btn.classList.add('btn-primary');
     document.getElementById('custom-days-field').style.display = currentFreq==='custom' ? 'block':'none';
+    document.getElementById('weekly-target-field').style.display = currentFreq==='weekly_count' ? 'block':'none';
   });
 });
+
+/* ============ CATEGORIES ============ */
+function populateCategorySelect(preferredValue){
+  const select = document.getElementById('habit-category-input');
+  const prev = preferredValue || select.value;
+  select.innerHTML = state.categories.map(c=>`<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+  if(state.categories.some(c=>c.name===prev)) select.value = prev;
+}
+function buildNewCatColorRow(){
+  const row = document.getElementById('new-cat-color-row');
+  row.innerHTML = '';
+  COLORS.forEach(c=>{
+    const sw = document.createElement('div');
+    sw.className = 'color-swatch' + (c===newCatColor ? ' selected':'');
+    sw.style.background = c;
+    sw.onclick = ()=>{ newCatColor = c; buildNewCatColorRow(); };
+    row.appendChild(sw);
+  });
+}
+function openCategoryModal(){
+  document.getElementById('category-overlay').classList.add('active');
+  newCatColor = COLORS[state.categories.length % COLORS.length];
+  renderCategoryList();
+  buildNewCatColorRow();
+}
+function closeCategoryModal(){
+  document.getElementById('category-overlay').classList.remove('active');
+  populateCategorySelect();
+  renderAll();
+}
+function renderCategoryList(){
+  const list = document.getElementById('category-list');
+  list.innerHTML = '';
+  state.categories.forEach(cat=>{
+    const row = document.createElement('div');
+    row.className = 'habit-row';
+    row.innerHTML = `
+      <div class="color-swatch selected" style="background:${cat.color};width:22px;height:22px;cursor:pointer;" title="Click to change color" onclick="cycleCategoryColor('${escapeHtml(cat.name)}')"></div>
+      <div class="habit-info"><div class="habit-name">${escapeHtml(cat.name)}</div></div>
+      <div class="habit-actions">
+        <button class="icon-btn" title="Rename" onclick="renameCategory('${escapeHtml(cat.name)}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        </button>
+        <button class="icon-btn" title="Delete" style="color:#c9634f;" onclick="deleteCategory('${escapeHtml(cat.name)}')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/></svg>
+        </button>
+      </div>`;
+    list.appendChild(row);
+  });
+}
+function cycleCategoryColor(name){
+  const cat = state.categories.find(c=>c.name===name);
+  if(!cat) return;
+  const idx = COLORS.indexOf(cat.color);
+  cat.color = COLORS[(idx+1) % COLORS.length];
+  saveData();
+  renderCategoryList();
+}
+function renameCategory(oldName){
+  const input = prompt('Rename category', oldName);
+  if(input === null) return;
+  const trimmed = input.trim();
+  if(!trimmed || trimmed === oldName) return;
+  if(state.categories.some(c=>c.name === trimmed)){ showToast('That category already exists'); return; }
+  state.categories.find(c=>c.name === oldName).name = trimmed;
+  state.habits.forEach(h=>{ if(h.category === oldName) h.category = trimmed; });
+  saveData();
+  renderCategoryList();
+  showToast('Category renamed');
+}
+function deleteCategory(name){
+  if(state.categories.length <= 1){ showToast('You need at least one category'); return; }
+  const fallback = state.categories.find(c=>c.name !== name).name;
+  const usedBy = state.habits.filter(h=>h.category === name).length;
+  const msg = usedBy > 0
+    ? `Delete "${name}"? ${usedBy} habit(s) using it will move to "${fallback}".`
+    : `Delete "${name}"?`;
+  if(!confirm(msg)) return;
+  state.categories = state.categories.filter(c=>c.name !== name);
+  state.habits.forEach(h=>{ if(h.category === name) h.category = fallback; });
+  saveData();
+  renderCategoryList();
+  showToast('Category deleted');
+}
+function addCategory(){
+  const nameInput = document.getElementById('new-cat-name');
+  const name = nameInput.value.trim();
+  if(!name){ showToast('Enter a category name'); return; }
+  if(state.categories.some(c=>c.name === name)){ showToast('That category already exists'); return; }
+  state.categories.push({ name, color: newCatColor });
+  nameInput.value = '';
+  newCatColor = COLORS[state.categories.length % COLORS.length];
+  saveData();
+  renderCategoryList();
+  buildNewCatColorRow();
+  showToast('Category added');
+}
 function openHabitModal(habitId){
   document.getElementById('habit-overlay').classList.add('active');
   const editing = !!habitId;
   document.getElementById('habit-modal-title').textContent = editing ? 'Edit habit' : 'New habit';
   document.getElementById('edit-habit-id').value = habitId || '';
+  populateCategorySelect(editing ? undefined : state.categories[0].name);
   if(editing){
     const h = state.habits.find(x=>x.id===habitId);
     document.getElementById('habit-name-input').value = h.name;
-    document.getElementById('habit-category-input').value = h.category;
+    populateCategorySelect(h.category);
     currentFreq = h.frequency;
     currentCustomDays = [...(h.customDays||[])];
+    currentWeeklyTarget = h.weeklyTarget || 3;
     currentColor = h.color;
   } else {
     document.getElementById('habit-name-input').value = '';
-    document.getElementById('habit-category-input').value = 'Health';
     currentFreq = 'daily';
     currentCustomDays = [];
+    currentWeeklyTarget = 3;
     currentColor = COLORS[state.habits.length % COLORS.length];
   }
+  document.getElementById('weekly-target-input').value = currentWeeklyTarget;
   document.querySelectorAll('.freq-opt').forEach(b=>{
     b.classList.toggle('btn-primary', b.dataset.freq === currentFreq);
   });
   document.getElementById('custom-days-field').style.display = currentFreq==='custom' ? 'block':'none';
+  document.getElementById('weekly-target-field').style.display = currentFreq==='weekly_count' ? 'block':'none';
   buildColorRow();
   buildCustomDaysRow();
   document.getElementById('habit-name-input').focus();
@@ -609,15 +806,21 @@ function saveHabit(){
   if(currentFreq === 'custom' && currentCustomDays.length === 0){
     showToast('Pick at least one day'); return;
   }
+  let weeklyTarget = 3;
+  if(currentFreq === 'weekly_count'){
+    weeklyTarget = parseInt(document.getElementById('weekly-target-input').value, 10);
+    if(!weeklyTarget || weeklyTarget < 1) weeklyTarget = 1;
+    if(weeklyTarget > 7) weeklyTarget = 7;
+  }
   if(editId){
     const h = state.habits.find(x=>x.id===editId);
     h.name = name; h.category = category; h.frequency = currentFreq;
-    h.customDays = [...currentCustomDays]; h.color = currentColor;
+    h.customDays = [...currentCustomDays]; h.color = currentColor; h.weeklyTarget = weeklyTarget;
     showToast('Habit updated');
   } else {
     state.habits.push({
       id: uid(), name, category, frequency: currentFreq,
-      customDays: [...currentCustomDays], color: currentColor,
+      customDays: [...currentCustomDays], color: currentColor, weeklyTarget: weeklyTarget,
       createdAt: todayStr()
     });
     showToast('Habit added');
@@ -654,10 +857,11 @@ function renderDashboard(){
   // 7 day completion rate
   let totalScheduled = 0, totalDone = 0;
   const days = [];
+  const dailyHabits = state.habits.filter(h=>h.frequency !== 'weekly_count');
   for(let i=6;i>=0;i--){
     const d = new Date(); d.setDate(d.getDate()-i);
     const dstr = todayStr(d);
-    const sched = state.habits.filter(h=>isScheduledToday(h,d));
+    const sched = dailyHabits.filter(h=>isScheduledToday(h,d));
     const dn = sched.filter(h=>isCompleted(h.id, dstr));
     totalScheduled += sched.length; totalDone += dn.length;
     days.push({label: d.toLocaleDateString(undefined,{weekday:'short'}), rate: sched.length ? Math.round(dn.length/sched.length*100) : 0});
@@ -673,6 +877,9 @@ function renderDashboard(){
     scheduled.forEach(h=>{
       const c = isCompleted(h.id, ds);
       const streak = calcStreak(h);
+      const badgeHtml = h.frequency === 'weekly_count'
+        ? `<span class="streak-badge">📅 ${weeklyProgressLabel(h)}</span><span class="streak-badge">🔥 ${streak}wk</span>`
+        : `<span class="streak-badge">🔥 ${streak}</span>`;
       const row = document.createElement('div');
       row.className = 'habit-row';
       row.innerHTML = `
@@ -682,8 +889,8 @@ function renderDashboard(){
         <div class="habit-info">
           <div class="habit-name">${escapeHtml(h.name)}</div>
           <div class="habit-meta">
-            <span class="cat-pill" style="background:${CATEGORY_COLORS[h.category]}22;color:${CATEGORY_COLORS[h.category]}">${h.category}</span>
-            <span class="streak-badge">🔥 ${streak}</span>
+            <span class="cat-pill" style="background:${getCategoryColor(h.category)}22;color:${getCategoryColor(h.category)}">${escapeHtml(h.category)}</span>
+            ${badgeHtml}
           </div>
         </div>`;
       list.appendChild(row);
@@ -720,7 +927,14 @@ function renderHabitsList(){
   }
   state.habits.forEach(h=>{
     const streak = calcStreak(h);
-    const freqLabel = h.frequency === 'daily' ? 'Every day' : h.frequency === 'weekdays' ? 'Weekdays' : h.customDays.map(d=>DAY_LABELS[d]).join(', ');
+    let freqLabel;
+    if(h.frequency === 'daily') freqLabel = 'Every day';
+    else if(h.frequency === 'weekdays') freqLabel = 'Weekdays';
+    else if(h.frequency === 'weekly_count') freqLabel = h.weeklyTarget + 'x / week';
+    else freqLabel = h.customDays.map(d=>DAY_LABELS[d]).join(', ');
+    const streakLabel = h.frequency === 'weekly_count'
+      ? `<span class="streak-badge">📅 ${weeklyProgressLabel(h)}</span><span class="streak-badge">🔥 ${streak}wk</span>`
+      : `<span class="streak-badge">🔥 ${streak}</span>`;
     const row = document.createElement('div');
     row.className = 'habit-row';
     row.innerHTML = `
@@ -728,9 +942,9 @@ function renderHabitsList(){
       <div class="habit-info">
         <div class="habit-name">${escapeHtml(h.name)}</div>
         <div class="habit-meta">
-          <span class="cat-pill" style="background:${CATEGORY_COLORS[h.category]}22;color:${CATEGORY_COLORS[h.category]}">${h.category}</span>
+          <span class="cat-pill" style="background:${getCategoryColor(h.category)}22;color:${getCategoryColor(h.category)}">${escapeHtml(h.category)}</span>
           <span>${freqLabel}</span>
-          <span class="streak-badge">🔥 ${streak}</span>
+          ${streakLabel}
         </div>
       </div>
       <div class="habit-actions">
@@ -771,18 +985,21 @@ function renderCalendar(){
   for(let day=1; day<=daysInMonth; day++){
     const d = new Date(year, month, day);
     const dstr = todayStr(d);
-    const scheduled = state.habits.filter(h=>isScheduledToday(h,d));
-    const done = scheduled.filter(h=>isCompleted(h.id, dstr));
+    // "full day" highlight only considers habits that are actually scheduled that specific day
+    const dailyScheduled = state.habits.filter(h=>h.frequency !== 'weekly_count' && isScheduledToday(h,d));
+    const dailyDone = dailyScheduled.filter(h=>isCompleted(h.id, dstr));
+    // dots show every completion that day, including weekly_count habits done on this day
+    const allDone = state.habits.filter(h=>isCompleted(h.id, dstr));
     const cell = document.createElement('div');
-    cell.className = 'cal-cell' + (dstr===todayStr() ? ' today':'') + (scheduled.length && done.length===scheduled.length ? ' full':'');
-    const dotsHtml = done.slice(0,6).map(h=>`<span class="cal-dot" style="background:${h.color}"></span>`).join('');
+    cell.className = 'cal-cell' + (dstr===todayStr() ? ' today':'') + (dailyScheduled.length && dailyDone.length===dailyScheduled.length ? ' full':'');
+    const dotsHtml = allDone.slice(0,6).map(h=>`<span class="cal-dot" style="background:${h.color}"></span>`).join('');
     cell.innerHTML = `<div class="cal-daynum">${day}</div><div class="cal-dots">${dotsHtml}</div>`;
     grid.appendChild(cell);
   }
 
   const legend = document.getElementById('cal-legend');
   const cats = [...new Set(state.habits.map(h=>h.category))];
-  legend.innerHTML = cats.map(c=>`<span><span class="dot" style="background:${CATEGORY_COLORS[c]}"></span>${c}</span>`).join('') || '<span style="color:var(--muted);font-size:12px;">Add habits to see category colors here.</span>';
+  legend.innerHTML = cats.map(c=>`<span><span class="dot" style="background:${getCategoryColor(c)}"></span>${escapeHtml(c)}</span>`).join('') || '<span style="color:var(--muted);font-size:12px;">Add habits to see category colors here.</span>';
 }
 
 /* ============ RENDER: STATS ============ */
@@ -836,7 +1053,7 @@ function renderStats(){
   if(chartCategory) chartCategory.destroy();
   chartCategory = new Chart(ctxCat, {
     type:'doughnut',
-    data:{ labels: catLabels, datasets:[{ data: catLabels.map(c=>catCounts[c]), backgroundColor: catLabels.map(c=>CATEGORY_COLORS[c]) }]},
+    data:{ labels: catLabels, datasets:[{ data: catLabels.map(c=>catCounts[c]), backgroundColor: catLabels.map(c=>getCategoryColor(c)) }]},
     options:{ plugins:{legend:{position:'bottom', labels:{boxWidth:10,font:{size:11}}}} }
   });
 
@@ -904,6 +1121,13 @@ function renderAll(){
   renderStats();
   renderAchievements();
 }
+document.getElementById('habit-overlay').addEventListener('click', e=>{
+  if(e.target.id === 'habit-overlay') closeHabitModal();
+});
+document.getElementById('category-overlay').addEventListener('click', e=>{
+  if(e.target.id === 'category-overlay') closeCategoryModal();
+});
+populateCategorySelect();
 renderAll();
 </script>
 </body>
