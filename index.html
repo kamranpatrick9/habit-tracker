@@ -453,6 +453,18 @@
   </div>
 </div>
 
+<!-- Confirm Modal (used instead of window.confirm, which Notion's embed sandbox blocks) -->
+<div class="overlay" id="confirm-overlay">
+  <div class="modal">
+    <h3 id="confirm-title">Are you sure?</h3>
+    <p id="confirm-body" style="font-size:13px;color:var(--muted);margin:0;"></p>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeConfirm()">Cancel</button>
+      <button class="btn btn-danger" id="confirm-yes-btn" style="background:var(--coral);color:white;border-color:var(--coral);">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -618,6 +630,21 @@ function showToast(msg){
 }
 function uid(){ return 'h_' + Math.random().toString(36).slice(2,10); }
 
+/* In-app confirm modal — window.confirm()/prompt() are blocked inside
+   Notion's embedded iframe sandbox, so we can't rely on native popups. */
+function showConfirm(title, body, onYes){
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-body').textContent = body;
+  document.getElementById('confirm-overlay').classList.add('active');
+  const yesBtn = document.getElementById('confirm-yes-btn');
+  const freshYesBtn = yesBtn.cloneNode(true); // clear old listeners
+  yesBtn.parentNode.replaceChild(freshYesBtn, yesBtn);
+  freshYesBtn.addEventListener('click', ()=>{ closeConfirm(); onYes(); });
+}
+function closeConfirm(){
+  document.getElementById('confirm-overlay').classList.remove('active');
+}
+
 /* ============ NAVIGATION ============ */
 document.querySelectorAll('.nav-btn').forEach(btn=>{
   btn.addEventListener('click', ()=>{
@@ -697,17 +724,35 @@ function closeCategoryModal(){
   populateCategorySelect();
   renderAll();
 }
+let editingCategoryName = null;
 function renderCategoryList(){
   const list = document.getElementById('category-list');
   list.innerHTML = '';
   state.categories.forEach(cat=>{
     const row = document.createElement('div');
     row.className = 'habit-row';
+    if(editingCategoryName === cat.name){
+      row.innerHTML = `
+        <div class="color-swatch selected" style="background:${cat.color};width:22px;height:22px;flex-shrink:0;"></div>
+        <div class="habit-info">
+          <input type="text" id="rename-input-${cat.name.replace(/[^a-zA-Z0-9]/g,'')}" value="${escapeHtml(cat.name)}" style="width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--line);font-family:'Inter',sans-serif;font-size:13px;">
+        </div>
+        <div class="habit-actions">
+          <button class="icon-btn" title="Save" onclick="commitRenameCategory('${escapeHtml(cat.name)}')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 13l4 4L19 7"/></svg>
+          </button>
+          <button class="icon-btn" title="Cancel" onclick="editingCategoryName=null; renderCategoryList();">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>`;
+      list.appendChild(row);
+      return;
+    }
     row.innerHTML = `
       <div class="color-swatch selected" style="background:${cat.color};width:22px;height:22px;cursor:pointer;" title="Click to change color" onclick="cycleCategoryColor('${escapeHtml(cat.name)}')"></div>
       <div class="habit-info"><div class="habit-name">${escapeHtml(cat.name)}</div></div>
       <div class="habit-actions">
-        <button class="icon-btn" title="Rename" onclick="renameCategory('${escapeHtml(cat.name)}')">
+        <button class="icon-btn" title="Rename" onclick="editingCategoryName='${escapeHtml(cat.name)}'; renderCategoryList();">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
         </button>
         <button class="icon-btn" title="Delete" style="color:#c9634f;" onclick="deleteCategory('${escapeHtml(cat.name)}')">
@@ -725,12 +770,12 @@ function cycleCategoryColor(name){
   saveData();
   renderCategoryList();
 }
-function renameCategory(oldName){
-  const input = prompt('Rename category', oldName);
-  if(input === null) return;
-  const trimmed = input.trim();
-  if(!trimmed || trimmed === oldName) return;
-  if(state.categories.some(c=>c.name === trimmed)){ showToast('That category already exists'); return; }
+function commitRenameCategory(oldName){
+  const input = document.getElementById('rename-input-' + oldName.replace(/[^a-zA-Z0-9]/g,''));
+  const trimmed = input.value.trim();
+  editingCategoryName = null;
+  if(!trimmed || trimmed === oldName){ renderCategoryList(); return; }
+  if(state.categories.some(c=>c.name === trimmed)){ showToast('That category already exists'); renderCategoryList(); return; }
   state.categories.find(c=>c.name === oldName).name = trimmed;
   state.habits.forEach(h=>{ if(h.category === oldName) h.category = trimmed; });
   saveData();
@@ -742,14 +787,15 @@ function deleteCategory(name){
   const fallback = state.categories.find(c=>c.name !== name).name;
   const usedBy = state.habits.filter(h=>h.category === name).length;
   const msg = usedBy > 0
-    ? `Delete "${name}"? ${usedBy} habit(s) using it will move to "${fallback}".`
-    : `Delete "${name}"?`;
-  if(!confirm(msg)) return;
-  state.categories = state.categories.filter(c=>c.name !== name);
-  state.habits.forEach(h=>{ if(h.category === name) h.category = fallback; });
-  saveData();
-  renderCategoryList();
-  showToast('Category deleted');
+    ? `${usedBy} habit(s) using "${name}" will move to "${fallback}". This can't be undone.`
+    : `This can't be undone.`;
+  showConfirm(`Delete "${name}"?`, msg, ()=>{
+    state.categories = state.categories.filter(c=>c.name !== name);
+    state.habits.forEach(h=>{ if(h.category === name) h.category = fallback; });
+    saveData();
+    renderCategoryList();
+    showToast('Category deleted');
+  });
 }
 function addCategory(){
   const nameInput = document.getElementById('new-cat-name');
@@ -830,14 +876,17 @@ function saveHabit(){
   renderAll();
 }
 function deleteHabit(habitId){
-  if(!confirm('Delete this habit? This also removes its history.')) return;
-  state.habits = state.habits.filter(h=>h.id!==habitId);
-  Object.keys(state.completions).forEach(ds=>{
-    state.completions[ds] = state.completions[ds].filter(id=>id!==habitId);
+  const h = state.habits.find(x=>x.id===habitId);
+  if(!h) return;
+  showConfirm(`Delete "${h.name}"?`, `This also removes its history. This can't be undone.`, ()=>{
+    state.habits = state.habits.filter(x=>x.id!==habitId);
+    Object.keys(state.completions).forEach(ds=>{
+      state.completions[ds] = state.completions[ds].filter(id=>id!==habitId);
+    });
+    saveData();
+    renderAll();
+    showToast('Habit deleted');
   });
-  saveData();
-  renderAll();
-  showToast('Habit deleted');
 }
 
 /* ============ RENDER: DASHBOARD ============ */
@@ -1126,6 +1175,9 @@ document.getElementById('habit-overlay').addEventListener('click', e=>{
 });
 document.getElementById('category-overlay').addEventListener('click', e=>{
   if(e.target.id === 'category-overlay') closeCategoryModal();
+});
+document.getElementById('confirm-overlay').addEventListener('click', e=>{
+  if(e.target.id === 'confirm-overlay') closeConfirm();
 });
 populateCategorySelect();
 renderAll();
