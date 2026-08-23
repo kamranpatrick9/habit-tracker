@@ -223,9 +223,32 @@
     opacity:0;pointer-events:none;transition:all .25s ease;z-index:100;
   }
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+
+  /* Sync status banner */
+  #storage-banner{
+    display:none;
+    background:var(--amber-soft);
+    border-bottom:1px solid var(--amber);
+    padding:10px 20px;
+    font-size:13px;
+    color:var(--ink);
+    align-items:center;
+    justify-content:center;
+    gap:14px;
+    text-align:center;
+    flex-wrap:wrap;
+  }
+  #storage-banner.show{display:flex;}
+  #storage-banner.danger{background:var(--coral-soft);border-color:var(--coral);}
+  #storage-banner button{
+    font-family:'Inter',sans-serif;font-weight:700;font-size:12px;
+    padding:6px 12px;border-radius:8px;border:1px solid var(--ink);
+    background:var(--ink);color:var(--paper);cursor:pointer;flex-shrink:0;
+  }
 </style>
 </head>
 <body>
+<div id="storage-banner"></div>
 <div id="app">
   <nav class="sidebar">
     <div class="brand"><span class="dot"></span> Habitline</div>
@@ -468,8 +491,11 @@
 <div class="toast" id="toast"></div>
 
 <script>
-/* ============ DATA LAYER ============ */
-const STORAGE_KEY = 'habitline_data_v1';
+/* ============ DATA LAYER (jsonbin.io) ============ */
+const JSONBIN_BIN_ID = '6a8a5bc6f5f4af5e293725ea';
+const JSONBIN_ACCESS_KEY = '$2a$10$IXYN8mxYbrR100AoIu0I9.K.wabTe3rMLWWhQIYJO746uNDikD4ma';
+const JSONBIN_URL = 'https://api.jsonbin.io/v3/b/' + JSONBIN_BIN_ID;
+
 const COLORS = ['#e2932f','#6b9080','#c9634f','#5b7fb5','#a874c9','#d4a53a','#4f9d8f'];
 const DEFAULT_CATEGORIES = [
   {name:'Health', color:'#6b9080'}, {name:'Productivity', color:'#e2932f'},
@@ -479,29 +505,65 @@ const DEFAULT_CATEGORIES = [
 ];
 const DAY_LABELS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-function loadData(){
-  let data = { habits: [], completions: {}, categories: [...DEFAULT_CATEGORIES] };
-  try{
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) data = JSON.parse(raw);
-  }catch(e){ console.warn('Could not load saved data', e); }
-  // migration: older saved data may not have a categories list yet
-  if(!data.categories || data.categories.length === 0){
-    data.categories = [...DEFAULT_CATEGORIES];
+function setSyncStatus(msg, isError){
+  const banner = document.getElementById('storage-banner');
+  banner.classList.add('show');
+  banner.classList.toggle('danger', !!isError);
+  banner.textContent = msg;
+  if(!isError){
+    clearTimeout(setSyncStatus._t);
+    setSyncStatus._t = setTimeout(()=>{ banner.classList.remove('show'); }, 1500);
   }
-  return data;
 }
-function saveData(){
+
+async function loadData(){
   try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }catch(e){ console.warn('Could not save data', e); }
+    setSyncStatus('Loading your habits…');
+    const res = await fetch(JSONBIN_URL + '/latest', {
+      headers: { 'X-Access-Key': JSONBIN_ACCESS_KEY }
+    });
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const data = json.record || {};
+    let needsSeed = false;
+    if(!Array.isArray(data.habits)){ data.habits = []; needsSeed = true; }
+    if(!data.completions || typeof data.completions !== 'object'){ data.completions = {}; needsSeed = true; }
+    if(!Array.isArray(data.categories) || data.categories.length === 0){ data.categories = [...DEFAULT_CATEGORIES]; needsSeed = true; }
+    document.getElementById('storage-banner').classList.remove('show');
+    if(needsSeed) data._needsSeed = true; // signal init() to write the filled-in structure straight back
+    return data;
+  }catch(e){
+    console.warn('Could not load from jsonbin.io', e);
+    setSyncStatus('⚠️ Could not reach jsonbin.io — check your Bin ID / Access Key and internet connection.', true);
+    return { habits: [], completions: {}, categories: [...DEFAULT_CATEGORIES] };
+  }
+}
+
+let saveTimer = null;
+function saveData(){
+  setSyncStatus('Saving…');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    try{
+      const res = await fetch(JSONBIN_URL, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Access-Key': JSONBIN_ACCESS_KEY },
+        body: JSON.stringify(state)
+      });
+      if(!res.ok) throw new Error('HTTP ' + res.status);
+      setSyncStatus('Saved ✓');
+    }catch(e){
+      console.warn('Could not save to jsonbin.io', e);
+      setSyncStatus('⚠️ Could not save — check your internet connection.', true);
+    }
+  }, 600); // wait a beat after the last change before writing, so rapid clicks don't spam requests
 }
 function getCategoryColor(name){
   const cat = state.categories.find(c=>c.name===name);
   return cat ? cat.color : '#8b8781';
 }
 
-let state = loadData();
+let state = { habits: [], completions: {}, categories: [...DEFAULT_CATEGORIES] };
 let currentFreq = 'daily';
 let currentCustomDays = [];
 let currentWeeklyTarget = 3;
@@ -1179,8 +1241,16 @@ document.getElementById('category-overlay').addEventListener('click', e=>{
 document.getElementById('confirm-overlay').addEventListener('click', e=>{
   if(e.target.id === 'confirm-overlay') closeConfirm();
 });
-populateCategorySelect();
-renderAll();
+
+async function init(){
+  state = await loadData();
+  const needsSeed = state._needsSeed;
+  delete state._needsSeed;
+  populateCategorySelect();
+  renderAll();
+  if(needsSeed) saveData(); // write the filled-in structure back so the bin is no longer empty/malformed
+}
+init();
 </script>
 </body>
 </html>
